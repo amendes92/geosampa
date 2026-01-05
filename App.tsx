@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { MOCK_LAYERS, INITIAL_LOGS } from './constants';
-import { IngestionJob, JobStatus, LogEntry, GeminiAnalysis } from './types';
+import { IngestionJob, JobStatus, LogEntry, GeminiAnalysis, ErrorDiagnosis, ModalMode } from './types';
 import JobCard from './components/JobCard';
 import Terminal from './components/Terminal';
 import AnalysisModal from './components/AnalysisModal';
-import { analyzeLayerMetadata } from './services/geminiService';
+import { analyzeLayerMetadata, diagnosePipelineError } from './services/geminiService';
 import { Activity, Layers, Terminal as TerminalIcon, Settings, Cpu } from 'lucide-react';
 
 const BATCH_SIZE = 1000;
+const TICK_RATE = 1000; // 1 second update loop
 
 const App: React.FC = () => {
   const [jobs, setJobs] = useState<IngestionJob[]>(() => 
@@ -18,6 +19,7 @@ const App: React.FC = () => {
       processedCount: 0,
       totalCount: layer.estimatedCount,
       currentBatch: 0,
+      currentSpeed: 0,
       errors: 0
     }))
   );
@@ -26,7 +28,9 @@ const App: React.FC = () => {
   
   // Analysis Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [currentAnalysis, setCurrentAnalysis] = useState<GeminiAnalysis | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [modalMode, setModalMode] = useState<ModalMode>('OPTIMIZATION');
+  const [currentAnalysis, setCurrentAnalysis] = useState<GeminiAnalysis | ErrorDiagnosis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const addLog = useCallback((message: string, level: LogEntry['level'] = 'INFO') => {
@@ -36,7 +40,7 @@ const App: React.FC = () => {
       level,
       message
     };
-    setLogs(prev => [...prev.slice(-100), newLog]); // Keep last 100 logs
+    setLogs(prev => [...prev.slice(-199), newLog]); // Keep last 200 logs
   }, []);
 
   // Simulator for Python Backend Logic
@@ -44,40 +48,46 @@ const App: React.FC = () => {
     const interval = setInterval(() => {
       setJobs(prevJobs => {
         return prevJobs.map(job => {
-          if (job.status !== JobStatus.RUNNING && job.status !== JobStatus.RETRYING) return job;
+          if (job.status !== JobStatus.RUNNING && job.status !== JobStatus.RETRYING) {
+            return { ...job, currentSpeed: 0 };
+          }
 
-          // Simulate random network jitter/errors (Tenacity Retry Logic simulation)
-          const random = Math.random();
-          if (job.status === JobStatus.RUNNING && random > 0.95) {
-             addLog(`[Tenacity] Connection timeout for ${job.layer.name} (Batch ${job.currentBatch}). Retrying in 2s...`, 'WARN');
-             return { ...job, status: JobStatus.RETRYING };
+          // Random error simulation
+          if (job.status === JobStatus.RUNNING && Math.random() > 0.98) {
+             addLog(`[Tenacity] Connection timeout for ${job.layer.name} (Batch ${job.currentBatch}). Retrying...`, 'ERROR');
+             return { ...job, status: JobStatus.RETRYING, currentSpeed: 0 }; // Speed drops to 0 on error
           }
 
           if (job.status === JobStatus.RETRYING) {
-            // Recover from retry
-            if (random > 0.3) {
+            if (Math.random() > 0.4) {
                addLog(`[Tenacity] Retry successful for ${job.layer.name}. Resuming...`, 'INFO');
                return { ...job, status: JobStatus.RUNNING };
             }
-            return job; // Still retrying
+            return job; 
           }
 
-          // Process Batch
-          const newProcessed = Math.min(job.totalCount, job.processedCount + Math.floor(Math.random() * 500) + 100);
+          // Process Batch & Calculate Speed
+          const batchSize = Math.floor(Math.random() * 800) + 200; // Random batch size 200-1000
+          const newProcessed = Math.min(job.totalCount, job.processedCount + batchSize);
           
-          if (newProcessed % (BATCH_SIZE * 5) < 500) {
-             addLog(`[WFS 2.0.0] Fetched features ${newProcessed - 1000} to ${newProcessed} for ${job.layer.name}. CRS Transform: EPSG:31983 -> EPSG:4326`, 'DEBUG');
+          if (newProcessed % (BATCH_SIZE * 5) < batchSize) {
+             addLog(`[WFS 2.0.0] Ingested ${batchSize} features for ${job.layer.name}.`, 'DEBUG');
           }
 
           if (newProcessed >= job.totalCount) {
-             addLog(`[Pipeline] Job completed for ${job.layer.name}. Total features: ${job.totalCount}`, 'INFO');
-             return { ...job, status: JobStatus.COMPLETED, processedCount: job.totalCount };
+             addLog(`[Pipeline] Job completed for ${job.layer.name}. Total: ${job.totalCount}`, 'INFO');
+             return { ...job, status: JobStatus.COMPLETED, processedCount: job.totalCount, currentSpeed: 0 };
           }
 
-          return { ...job, processedCount: newProcessed, currentBatch: job.currentBatch + 1 };
+          return { 
+            ...job, 
+            processedCount: newProcessed, 
+            currentBatch: job.currentBatch + 1,
+            currentSpeed: batchSize // Simplified: batchSize per tick (1s) = features/sec
+          };
         });
       });
-    }, 800);
+    }, TICK_RATE);
 
     return () => clearInterval(interval);
   }, [addLog]);
@@ -91,22 +101,44 @@ const App: React.FC = () => {
     }));
   };
 
-  const handleAnalyze = async (job: IngestionJob) => {
+  const handleAnalyze = async (job: IngestionJob, mode: ModalMode) => {
+    setActiveJobId(job.id);
+    setModalMode(mode);
     setIsModalOpen(true);
-    setIsAnalyzing(true);
     setCurrentAnalysis(null);
-    addLog(`[Gemini] Starting schema analysis for ${job.layer.name}...`, 'INFO');
+    
+    // Only auto-trigger analysis if it's Optimization or Diagnosis. SQL waits for user input.
+    if (mode === 'SQL') return;
 
+    setIsAnalyzing(true);
     try {
-      const analysis = await analyzeLayerMetadata(job.layer);
-      setCurrentAnalysis(analysis);
-      addLog(`[Gemini] Analysis complete for ${job.layer.name}.`, 'INFO');
+      if (mode === 'OPTIMIZATION') {
+        addLog(`[Gemini] Starting schema optimization analysis for ${job.layer.name}...`, 'INFO');
+        const result = await analyzeLayerMetadata(job.layer);
+        setCurrentAnalysis(result);
+      } else if (mode === 'DIAGNOSIS') {
+        addLog(`[Gemini] Diagnosing logs for ${job.layer.name}...`, 'WARN');
+        const result = await diagnosePipelineError(job.layer, logs);
+        setCurrentAnalysis(result);
+      }
     } catch (e) {
       addLog(`[Gemini] Analysis failed for ${job.layer.name}.`, 'ERROR');
     } finally {
       setIsAnalyzing(false);
     }
   };
+
+  // Handle switching tabs inside the modal
+  const handleModalModeChange = (newMode: ModalMode) => {
+    const job = jobs.find(j => j.id === activeJobId);
+    if (job) {
+      handleAnalyze(job, newMode);
+    } else {
+      setModalMode(newMode); // Fallback
+    }
+  };
+
+  const activeJob = jobs.find(j => j.id === activeJobId) || null;
 
   return (
     <div className="min-h-screen flex text-slate-200 font-sans">
@@ -117,11 +149,11 @@ const App: React.FC = () => {
             <Cpu className="text-indigo-400" />
             ETL Commander
           </h1>
-          <p className="text-xs text-slate-500 mt-2 font-mono">v2.4.0 (Python/PostGIS)</p>
+          <p className="text-xs text-slate-500 mt-2 font-mono">v2.5.0 (AI-Enhanced)</p>
         </div>
         
         <nav className="flex-1 p-4 space-y-2">
-          <div className="bg-indigo-500/10 text-indigo-400 px-4 py-3 rounded-lg flex items-center gap-3 border border-indigo-500/20 font-medium">
+          <div className="bg-indigo-500/10 text-indigo-400 px-4 py-3 rounded-lg flex items-center gap-3 border border-indigo-500/20 font-medium cursor-pointer">
             <Activity size={18} /> Dashboard
           </div>
           <div className="text-slate-400 hover:bg-slate-900 hover:text-white px-4 py-3 rounded-lg flex items-center gap-3 transition-colors cursor-pointer">
@@ -200,8 +232,11 @@ const App: React.FC = () => {
       <AnalysisModal 
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        analysis={currentAnalysis}
+        analysisData={currentAnalysis}
         isLoading={isAnalyzing}
+        mode={modalMode}
+        setMode={handleModalModeChange}
+        layer={activeJob ? activeJob.layer : null}
       />
     </div>
   );

@@ -1,28 +1,22 @@
 import React from 'react';
 import { IngestionJob, JobStatus } from '../types';
-import { Play, Pause, AlertTriangle, CheckCircle, Database, Server } from 'lucide-react';
+import { Play, Pause, AlertTriangle, Activity, Database, Server, Bug } from 'lucide-react';
 
 interface JobCardProps {
   job: IngestionJob;
   onToggle: (id: string) => void;
-  onAnalyze: (job: IngestionJob) => void;
+  onAnalyze: (job: IngestionJob, mode: 'OPTIMIZATION' | 'DIAGNOSIS') => void;
 }
 
 const JobCard: React.FC<JobCardProps> = ({ job, onToggle, onAnalyze }) => {
   const progress = Math.min(100, (job.processedCount / job.totalCount) * 100);
   
-  const getStatusColor = (status: JobStatus) => {
-    switch(status) {
-      case JobStatus.RUNNING: return 'text-blue-400';
-      case JobStatus.RETRYING: return 'text-yellow-400';
-      case JobStatus.ERROR: return 'text-red-500';
-      case JobStatus.COMPLETED: return 'text-green-400';
-      default: return 'text-slate-500';
-    }
-  };
-
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-lg p-6 hover:border-slate-700 transition-colors">
+    <div className={`bg-slate-900 border rounded-lg p-6 transition-all duration-300 ${
+      job.status === JobStatus.ERROR ? 'border-red-500/30 shadow-[0_0_15px_rgba(239,68,68,0.1)]' : 
+      job.status === JobStatus.RETRYING ? 'border-yellow-500/30' :
+      'border-slate-800 hover:border-slate-700'
+    }`}>
       <div className="flex justify-between items-start mb-4">
         <div>
           <h3 className="text-lg font-bold text-white flex items-center gap-2">
@@ -31,12 +25,14 @@ const JobCard: React.FC<JobCardProps> = ({ job, onToggle, onAnalyze }) => {
           </h3>
           <p className="text-xs text-slate-400 font-mono mt-1">{job.layer.wfsUrl}</p>
         </div>
-        <div className={`px-2 py-1 rounded text-xs font-bold border ${
+        <div className={`px-2 py-1 rounded text-xs font-bold border flex items-center gap-1 ${
           job.status === JobStatus.RUNNING ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' :
           job.status === JobStatus.RETRYING ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400' :
+          job.status === JobStatus.ERROR ? 'bg-red-500/10 border-red-500/30 text-red-500' :
           job.status === JobStatus.COMPLETED ? 'bg-green-500/10 border-green-500/30 text-green-400' :
           'bg-slate-800 border-slate-700 text-slate-400'
         }`}>
+          {job.status === JobStatus.RETRYING && <AlertTriangle size={10} />}
           {job.status}
         </div>
       </div>
@@ -49,8 +45,11 @@ const JobCard: React.FC<JobCardProps> = ({ job, onToggle, onAnalyze }) => {
             <span className="text-white font-mono">{job.processedCount.toLocaleString()}</span>
           </div>
            <div className="bg-slate-950 p-3 rounded border border-slate-800/50">
-            <span className="text-slate-500 block text-xs mb-1">TOTAL (EST)</span>
-            <span className="text-white font-mono">{job.totalCount.toLocaleString()}</span>
+            <span className="text-slate-500 block text-xs mb-1">SPEED</span>
+            <span className={`font-mono flex items-center gap-1 ${job.status === JobStatus.RUNNING ? 'text-green-400' : 'text-slate-500'}`}>
+              <Activity size={12} />
+              {job.status === JobStatus.RUNNING ? job.currentSpeed.toLocaleString() : 0} <span className="text-[10px] text-slate-600">/sec</span>
+            </span>
           </div>
         </div>
 
@@ -78,18 +77,27 @@ const JobCard: React.FC<JobCardProps> = ({ job, onToggle, onAnalyze }) => {
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-slate-800 hover:bg-slate-700 text-white rounded transition-colors"
           >
             {job.status === JobStatus.RUNNING ? (
-              <><Pause size={14} /> Pause Ingestion</>
+              <><Pause size={14} /> Pause</>
             ) : (
-              <><Play size={14} /> Start Pipeline</>
+              <><Play size={14} /> Resume</>
             )}
           </button>
           
-          <button 
-             onClick={() => onAnalyze(job)}
-             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 rounded transition-colors ml-auto"
-          >
-            <Server size={14} /> Analyze Schema (AI)
-          </button>
+          {(job.status === JobStatus.ERROR || job.status === JobStatus.RETRYING) ? (
+            <button 
+              onClick={() => onAnalyze(job, 'DIAGNOSIS')}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 rounded transition-colors ml-auto animate-pulse"
+            >
+              <Bug size={14} /> Investigate Error
+            </button>
+          ) : (
+            <button 
+               onClick={() => onAnalyze(job, 'OPTIMIZATION')}
+               className="flex items-center gap-2 px-3 py-1.5 text-sm bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 rounded transition-colors ml-auto"
+            >
+              <Server size={14} /> Schema AI
+            </button>
+          )}
         </div>
       </div>
     </div>

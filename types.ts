@@ -28,6 +28,7 @@ export interface IngestionJob {
   processedCount: number;
   totalCount: number;
   currentBatch: number;
+  currentSpeed: number; // features per second
   errors: number;
   startTime?: number;
 }
@@ -37,3 +38,12 @@ export interface GeminiAnalysis {
   summary: string;
   optimizationTips: string[];
 }
+
+export interface ErrorDiagnosis {
+  layerName: string;
+  errorType: string;
+  explanation: string;
+  suggestedFix: string;
+}
+
+export type ModalMode = 'OPTIMIZATION' | 'DIAGNOSIS' | 'SQL';
