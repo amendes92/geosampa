@@ -1,0 +1,5 @@
+{
+  "name": "GeoSampa ETL Commander",
+  "description": "A dashboard for monitoring and controlling high-volume WFS geospatial data ingestion pipelines. visualizing pagination, retries, and spatial chunking.",
+  "requestFramePermissions": []
+}
